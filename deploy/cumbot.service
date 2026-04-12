@@ -1,0 +1,19 @@
+[Unit]
+Description=CumBot Telegram Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Desktop/CumBot
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/ubuntu/Desktop/CumBot/.env
+ExecStart=/home/ubuntu/Desktop/CumBot/.venv/bin/python /home/ubuntu/Desktop/CumBot/main.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
