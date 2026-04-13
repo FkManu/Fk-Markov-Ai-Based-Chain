@@ -18,14 +18,17 @@ def is_rate_limit_error(exc: Exception) -> bool:
 
 
 class GroqService:
-    def __init__(self) -> None:
+    def __init__(self, api_key: str | None = None) -> None:
+        # api_key esplicita ha priorità; se None usa config.GROQ_API_KEY a runtime
+        self._explicit_api_key = api_key
         self._client: AsyncGroq | None = None
 
     def _get_client(self) -> AsyncGroq | None:
-        if not config.GROQ_API_KEY:
+        key = self._explicit_api_key or config.GROQ_API_KEY
+        if not key:
             return None
         if self._client is None:
-            self._client = AsyncGroq(api_key=config.GROQ_API_KEY)
+            self._client = AsyncGroq(api_key=key)
         return self._client
 
     async def generate_text(
@@ -46,6 +49,27 @@ class GroqService:
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": user_prompt},
             ],
+            temperature=temperature,
+            max_tokens=max_output_tokens,
+        )
+        text = response.choices[0].message.content
+        return text.strip() if text else None
+
+    async def generate_conversation(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        temperature: float,
+        max_output_tokens: int,
+    ) -> str | None:
+        """Multi-turn: accetta una lista completa di messaggi {role, content}."""
+        client = self._get_client()
+        if client is None:
+            return None
+        response = await client.chat.completions.create(
+            model=model,
+            messages=messages,
             temperature=temperature,
             max_tokens=max_output_tokens,
         )

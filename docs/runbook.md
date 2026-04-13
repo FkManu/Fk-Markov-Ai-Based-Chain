@@ -26,7 +26,10 @@
 - L'autopost automatico lavora solo su chat di tipo gruppo o supergruppo gia note al bot.
 - L'autopost non e piu basato sul tempo: scatta quando la chat accumula abbastanza messaggi umani rispetto al cooldown configurato.
 - Se il provider LLM non e disponibile per `Simula`, il bot usa il testo Markov grezzo.
-- Se il provider LLM va in quota su `/ask`, il bot risponde con un messaggio esplicito.
+- `/ask` usa `compound-beta` (con web search integrata Groq) come modello primario, con catena di fallback automatica: `compound-beta` → `compound-beta-mini` → `llama-3.3-70b-versatile`. Qualsiasi errore su un modello passa al successivo senza interruzione.
+- Se tutti i modelli `/ask` falliscono per rate limit, il bot risponde con un messaggio esplicito.
+- `GROQ_ASK_API_KEY` è una chiave Groq dedicata per `/ask` (separata da `GROQ_API_KEY` usata da refiner e classifier). Se non impostata, entrambi usano `GROQ_API_KEY`. Tenerla separata isola i rate limit di `/ask` dall'impattare il refiner.
+- **Conversazione multi-turn `/ask`**: rispondere a un messaggio del bot generato da `/ask` continua la conversazione con Groq (invece di passare al Markov). La storia è mantenuta in-memory con TTL 2 ore. Ogni turno viene loggato con `notes="ask_continuation"`.
 - Il provider LLM attivo per refine e `/ask` e ora Groq; il fallback su bozza Markov resta attivo in caso di errore o rate limit.
 - Opzionale: `GROQ_CLASSIFY_ENABLED=true` attiva un classifier intent leggero solo sulle mention/reply non gia coperte dal fast path regex (azioni esplicite e domande specifiche restano locali). Label usati: `roast`, `reaction`, `agreement`, fallback `generic`.
 - `/importlive` importa un export Telegram manuale dentro `training_corpus` per una chat specifica. Modalita default `reset` (rimpiazza solo la parte `export` del corpus freddo di quella chat); `append` aggiunge in coda con dedup. Non tocca i modelli finche non lanci `/retrain`.
@@ -50,6 +53,10 @@
 - Per ricevere gli update reaction da Telegram, il bot deve essere admin nel gruppo.
 - Il bot rileva il tono del contesto recente (ultimi 5 messaggi): se aggressivo (insulti presenti) sia la catena Markov che Groq orientano l'output in direzione nervosa/tagliente; se playful (≥2 "ahah/lol" in 5 msg) verso ironica/divertente. Funziona su mention, reply e autopost. Zero chiamate Groq extra.
 - Se `GROQ_CLASSIFY_ENABLED=true`, sulle mention/reply non coperte da action regex o da una domanda specifica parte anche una classificazione intent Groq: `roast` aggiunge seed aggressivi e può spostare il tone verso `aggressive`; `reaction` e `agreement` aggiungono seed lessicali leggeri senza stravolgere la Markov.
+- **Reaction/agreement breve**: quando `intent_label in (reaction, agreement)` e l'input è ≤2 parole, il bot bypassa Markov e Groq. Con probabilità 35% invia uno sticker dal corpus; altrimenti risponde con una frase breve fissa ("ok", "ci sta", "sei un grande", "diglielo", ecc.). Loggato con `notes="reaction_short"`.
+- **Roast — contrattacco**: quando `intent_label=roast`, il refiner Groq riceve l'insulto originale dell'utente come contesto aggiuntivo e la istruzione di formulare un contrattacco diretto in prima persona, non solo di amplificare la bozza.
+- Il refiner Groq non traduce mai termini inglesi usati come slang nel testo italiano (es. "bro", "fra", "cringe", "vibe", "lol", "mid"). La regola è esplicita nel system prompt di `groq/refiner.py`.
+- **`insulta [target]`**: il nome del soggetto da insultare viene estratto con priorità: `@username` → parola capitalizzata (es. "Rocco" da "insulta quel coglione di Rocco") → fallback prime 3 parole. Il nome diventa seed primario per la generazione Markov.
 - Il tone hint Groq è condizionale: se la bozza contiene già insulti li mantiene/intensifica, ma **non ne aggiunge di nuovi** se la bozza è neutrale. Questo evita il problema di Groq che "settava il tono" su ogni output.
 - Gli sticker inviati in chat vengono salvati in `sticker_corpus` (dedup per file). Il bot può reinviarne uno su mention (prob `STICKER_RESEND_PROBABILITY`, default 8%) o su autopost (stessa prob). La GIF su mention ora è un reply al messaggio trigger invece di un messaggio standalone.
 - Il refiner Groq usa come default `0.76` (abbassata progressivamente da `1.15`). Leve operative: system prompt in `groq/refiner.py`, default env e override per-chat via `/groqtemp`. `/draft` resta il tool principale per monitorare l'impatto del refiner sugli output.
@@ -149,7 +156,7 @@ gh repo create fkmanu/cumbot --private --source=. --remote=origin --push
 
 Funziona su due livelli:
 
-- **Contesto immediato** (ultimi `IMMEDIATE_CONTEXT_SIZE=3` messaggi, default): topic words e nomi estratti per guidare la generazione su domande. Non viene mixato nel modello.
+- **Contesto immediato** (ultimi `IMMEDIATE_CONTEXT_SIZE=5` messaggi, default): topic words e nomi estratti per guidare la generazione su domande e su input ≥4 parole. Non viene mixato nel modello.
 - **Corpus recente** (ultimi `LIVE_CORPUS_LIMIT=30` messaggi, peso `LIVE_CORPUS_WEIGHT=0.2`): mini-modello markovify combinato col base model per deriva tematica. Attivo da `LIVE_CORPUS_MIN_MESSAGES=15` messaggi in poi.
 
 Variabili d'ambiente tunable:
@@ -157,7 +164,7 @@ Variabili d'ambiente tunable:
 LIVE_CORPUS_LIMIT=30          # quanti msg usare per il corpus recente
 LIVE_CORPUS_WEIGHT=0.2        # peso live model nella combine
 LIVE_CORPUS_MIN_MESSAGES=15   # minimo msg per attivare live model
-IMMEDIATE_CONTEXT_SIZE=3      # quanti msg per topic/seed extraction
+IMMEDIATE_CONTEXT_SIZE=5      # quanti msg per topic/seed extraction
 ALLOWED_CHAT_IDS=             # whitelist chat; vuoto = nessuna restrizione
 REACTION_PROBABILITY=0.06     # probabilita che il bot reagisca a un msg in arrivo
 REACTION_EMOJI=😂,💀,🔥,...     # set emoji per reactions randomiche
@@ -169,9 +176,12 @@ GIF_CORPUS_MAX=200            # GIF massime salvate per chat
 STICKER_RESEND_PROBABILITY=0.08  # probabilita sticker resend su mention/autopost
 STICKER_CORPUS_MAX=100           # sticker massimi salvati per chat
 ANNOUNCEMENT_TIMEZONE=Europe/Rome  # timezone per gli orari degli annunci
-GROQ_API_KEY=                 # chiave API Groq
+GROQ_API_KEY=                 # chiave API Groq (refiner + classifier)
+GROQ_ASK_API_KEY=             # chiave Groq dedicata per /ask (opzionale, isola rate limit)
 GROQ_REFINER_MODEL=llama-3.3-70b-versatile
-GROQ_ASK_MODEL=llama-3.3-70b-versatile
+GROQ_ASK_MODEL=llama-3.3-70b-versatile   # fallback finale /ask (no web search)
+GROQ_COMPOUND_MODEL=compound-beta         # modello primario /ask (web search integrata)
+GROQ_COMPOUND_MINI_MODEL=compound-beta-mini  # fallback intermedio /ask
 GROQ_REFINER_TEMPERATURE=0.76 # default refiner Groq
 GROQ_ASK_TEMPERATURE=0.6      # default /ask Groq
 GROQ_CLASSIFY_ENABLED=false   # classifier intent Groq opzionale sulle mention/reply
@@ -204,8 +214,9 @@ Feature completamente separata da Markov/Groq: invia testo statico a orari fissi
 - Tipi supportati: `chi` / `cosa` / `come` / `quando` / `perché` / `dove` / `quale` / `quanto`.
 - I seed hanno due livelli di priorità (merge con dedup, input prima):
   1. **Seed dall'input** (`extract_seeds_from_input`): topic words o nomi propri estratti direttamente dal testo della domanda, dopo aver rimosso il @mention del bot.
-  2. **Seed dal contesto** (`extract_topic_seeds`): topic words dai 2-3 messaggi precedenti; per "chi?" include anche i nomi degli speaker.
+  2. **Seed dal contesto** (`extract_topic_seeds`): topic words dagli ultimi `IMMEDIATE_CONTEXT_SIZE` messaggi precedenti; per "chi?" include anche i nomi degli speaker.
 - Le parole-seme fisse in `QUESTION_SEEDS` sono usate solo come fallback se né input né contesto producono seed validi.
+- Per input ≥4 parole **senza** question_type riconosciuto, il seeding contestuale è comunque attivo (topic words estratti da input + contesto immediato), con priorità sui tone_seeds.
 - Se la generazione guidata non trova candidati, fallback alla generazione normale.
 - Il pool candidati del fallback viene sempre raddoppiato (`MARKOV_CANDIDATE_COUNT * 2`) e i candidati che terminano con `?` vengono filtrati. Questo vale su tutte le mention/reply, non solo sulle domande.
 - La feature è puramente Markov, non richiede Groq.

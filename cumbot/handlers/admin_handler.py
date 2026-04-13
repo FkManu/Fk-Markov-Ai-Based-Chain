@@ -698,6 +698,9 @@ async def handle_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         modified = draft.lower().strip() != output.lower().strip()
         flag = " ✏️" if modified else ""
         lines.append(f"#{record.id} [{record.trigger_type}] llm={'on' if record.used_groq else 'off'}{flag}")
+        if record.input_text and record.trigger_type in ("mention", "ask"):
+            inp = record.input_text.replace("\n", " ").strip()
+            lines.append(f"  IN: {inp[:100]}")
         lines.append(f"  D: {draft[:100] or '(vuoto)'}")
         if modified:
             lines.append(f"  O: {output[:100] or '(vuoto)'}")

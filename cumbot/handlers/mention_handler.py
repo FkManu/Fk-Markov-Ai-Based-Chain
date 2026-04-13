@@ -17,10 +17,15 @@ from cumbot.db.state import (
     register_chat,
     reset_autopost_cooldown,
 )
+from telegram.constants import ChatAction
+
+from cumbot.groq.chat import ask_groq_conversation
 from cumbot.groq.classifier import classify_intent
+from cumbot.groq.conversation_store import ask_store
 from cumbot.groq.refiner import refine_draft
 from cumbot.markov.generator import generate_draft
 from cumbot import config
+from cumbot.telegram_utils import split_message
 from cumbot.markov.intent import (
     BotAction,
     QUESTION_SEEDS,
@@ -49,6 +54,34 @@ INTENT_SEEDS: dict[str, list[str]] = {
 INTENT_TONES: dict[str, str] = {
     "roast": "aggressive",
 }
+
+# Risposte brevi fisse per reazioni emotive (≤2 parole, bypassa Markov)
+REACTION_SHORT_RESPONSES: list[str] = [
+    "ok",
+    "ci sta",
+    "sei un grande",
+    "bravo",
+    "giusto",
+    "diglielo",
+    "vabbè",
+    "eh sì",
+    "esatto",
+    "ah beh",
+    "certo",
+    "ovvio",
+    "chiaro",
+    "maddai",
+    "ma va",
+    "dai su",
+    "tranquillo",
+    "ok dai",
+    "ma certo",
+    "chiaro che sì",
+    "non ci sono dubbi",
+    "hai ragione",
+    "dici bene",
+    "confermo",
+]
 
 
 async def _handle_action(
@@ -174,6 +207,53 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     input_text = (message.text or message.caption or "").strip()
 
+    # Continuazione conversazione /ask: se è un reply ad un messaggio bot
+    # che faceva parte di una sessione /ask, continua con Groq multi-turn.
+    reply_to = message.reply_to_message
+    if (
+        reply_to is not None
+        and reply_to.from_user is not None
+        and reply_to.from_user.id == bot.id
+    ):
+        history = ask_store.get(chat.id, reply_to.message_id)
+        if history is not None:
+            # Rimuovi @mention dal testo utente prima di aggiungerlo alla storia
+            import re as _re
+            clean_input = _re.sub(
+                rf"@{_re.escape(bot.username or '')}\b", "", input_text, flags=_re.IGNORECASE
+            ).strip() or input_text
+            try:
+                await chat.send_action(ChatAction.TYPING)
+            except Exception:
+                pass
+            temp = settings.groq_temperature if settings is not None else None
+            answer, updated_history = await ask_groq_conversation(
+                history=history,
+                new_user_message=clean_input,
+                temperature=temp,
+            )
+            chunks = split_message(answer)
+            first_reply = await message.reply_text(chunks[0])
+            for chunk in chunks[1:]:
+                await message.reply_text(chunk)
+            # Salva la storia aggiornata sotto il nuovo message_id del bot
+            ask_store.set(chat.id, first_reply.message_id, updated_history)
+            await log_generated_message(
+                chat_id=chat.id,
+                trigger_type="ask",
+                groq_enabled=groq_enabled,
+                used_groq=groq_enabled,
+                input_text=input_text,
+                draft_text=None,
+                output_text=answer,
+                recent_context=recent_context,
+                request_message_id=message.message_id,
+                response_message_id=first_reply.message_id,
+                notes="ask_continuation",
+            )
+            await reset_autopost_cooldown(chat.id)
+            return
+
     # Rilevamento azione esplicita (gif / sticker / insulta)
     action = detect_action(input_text, bot_username=bot.username or "")
     if action is not None:
@@ -265,6 +345,50 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if tone == "neutral":
                 tone = INTENT_TONES.get(intent_label, tone)
 
+    # Reazione o accordo breve (≤2 parole): sticker o risposta fissa ironica
+    if intent_label in ("reaction", "agreement") and len(input_text.split()) <= 2:
+        reaction_trigger_user = None
+        if message.from_user and not message.from_user.is_bot:
+            reaction_trigger_user = {
+                "user_id": message.from_user.id,
+                "username": message.from_user.username or "",
+                "display_name": message.from_user.full_name or message.from_user.username or str(message.from_user.id),
+            }
+        reaction_candidates = build_mention_candidates(
+            trigger_user=reaction_trigger_user,
+            recent_context=recent_context,
+            exclude_user_ids={bot.id} if bot.id is not None else set(),
+        )
+        sent_sticker = False
+        if random.random() < 0.35:
+            sticker_file_id = await get_random_sticker(chat.id)
+            if sticker_file_id:
+                try:
+                    await message.reply_sticker(sticker=sticker_file_id)
+                    sent_sticker = True
+                except Exception:
+                    pass
+        if not sent_sticker:
+            short_output = random.choice(REACTION_SHORT_RESPONSES)
+            rendered, parse_mode = resolve_placeholder_mentions(short_output, reaction_candidates)
+            reply = await message.reply_text(rendered, parse_mode=parse_mode)
+            await log_generated_message(
+                chat_id=chat.id,
+                trigger_type="mention",
+                groq_enabled=groq_enabled,
+                used_groq=False,
+                persona_ids=persona_ids,
+                input_text=message.text or message.caption,
+                draft_text=short_output,
+                output_text=short_output,
+                recent_context=recent_context,
+                request_message_id=message.message_id,
+                response_message_id=reply.message_id,
+                notes="reaction_short",
+            )
+        await reset_autopost_cooldown(chat.id)
+        return
+
     draft = generate_draft(
         persona_ids=persona_ids,
         live_texts=live_texts or None,
@@ -280,6 +404,7 @@ async def handle_mention(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             persona_ids=persona_ids,
             tone=tone,
             temperature=settings.groq_temperature if settings is not None else None,
+            trigger_input=input_text if intent_label == "roast" else None,
         )
     else:
         output = draft

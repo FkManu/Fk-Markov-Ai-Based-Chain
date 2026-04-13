@@ -62,6 +62,7 @@ SOFT_RESTARTERS = {
 _PUNCTUATION_RE = re.compile(r"\s+([,.;:!?])")
 _DOUBLE_WORD_RE = re.compile(r"\b([\w@#']+)\b(?:\s+\1\b)+", re.IGNORECASE)
 _SPACE_AFTER_PUNCT_RE = re.compile(r"([,;:!?])(?!\s|$)")
+_DOUBLE_PUNCT_RE = re.compile(r"([?!])\1+")
 _EDGE_PUNCT_RE = re.compile(r"^[^\w@#']+|[^\w@#']+$", re.UNICODE)
 
 
@@ -134,6 +135,7 @@ def polish_generated_text(text: str) -> str:
         return ""
 
     cleaned = _PUNCTUATION_RE.sub(r"\1", cleaned)
+    cleaned = _DOUBLE_PUNCT_RE.sub(r"\1", cleaned)
     cleaned = _SPACE_AFTER_PUNCT_RE.sub(r"\1 ", cleaned)
     cleaned = _DOUBLE_WORD_RE.sub(lambda match: match.group(1), cleaned)
 

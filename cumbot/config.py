@@ -63,8 +63,14 @@ MODELS_DIR = BASE_DIR / "models"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+# API key dedicata per /ask (compound-beta). Se vuota usa GROQ_API_KEY.
+# Tenerla separata evita che i rate limit di /ask impattino refiner e classifier.
+GROQ_ASK_API_KEY = os.getenv("GROQ_ASK_API_KEY", "")
 GROQ_REFINER_MODEL = os.getenv("GROQ_REFINER_MODEL", "llama-3.3-70b-versatile")
 GROQ_ASK_MODEL = os.getenv("GROQ_ASK_MODEL", "llama-3.3-70b-versatile")
+# Catena di fallback per /ask: compound-beta → compound-beta-mini → GROQ_ASK_MODEL
+GROQ_COMPOUND_MODEL = os.getenv("GROQ_COMPOUND_MODEL", "compound-beta")
+GROQ_COMPOUND_MINI_MODEL = os.getenv("GROQ_COMPOUND_MINI_MODEL", "compound-beta-mini")
 GROQ_REFINER_TEMPERATURE = float(os.getenv("GROQ_REFINER_TEMPERATURE", "0.76"))
 GROQ_ASK_TEMPERATURE = float(os.getenv("GROQ_ASK_TEMPERATURE", "0.6"))
 GROQ_CLASSIFY_ENABLED = os.getenv("GROQ_CLASSIFY_ENABLED", "false").strip().lower() == "true"

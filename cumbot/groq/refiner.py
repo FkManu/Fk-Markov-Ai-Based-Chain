@@ -50,6 +50,7 @@ async def refine_draft(
     persona_ids: list[str] | None,
     tone: str = "neutral",
     temperature: float | None = None,
+    trigger_input: str | None = None,
 ) -> str:
     if not draft.strip():
         return draft
@@ -63,6 +64,16 @@ async def refine_draft(
     tone_hint = TONE_HINTS.get(tone, "")
     if tone_hint:
         system_prompt += f"\n{tone_hint}"
+
+    # Per i roast (insulto diretto al bot): contestualizza la risposta come contrattacco
+    if tone == "aggressive" and trigger_input and trigger_input.strip():
+        cleaned_trigger = re.sub(r"@\w+", "", trigger_input).strip()
+        if cleaned_trigger:
+            system_prompt += (
+                f"\nL'utente ha scritto al bot: \"{cleaned_trigger}\". "
+                "Usa la bozza come spunto lessicale ma formula un contrattacco diretto in prima persona, "
+                "come se il bot stesse ribattendo all'insulto. Mantieni il registro del gruppo."
+            )
 
     context_lines = [
         f"{item.get('speaker') or item.get('display_name') or item.get('username') or 'unknown'}: {item.get('text', '').strip()}"

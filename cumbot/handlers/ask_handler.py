@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import CommandHandler, ContextTypes
 
 from cumbot.access import is_chat_allowed
@@ -10,7 +11,9 @@ from cumbot.db.state import (
     register_chat,
     reset_autopost_cooldown,
 )
-from cumbot.groq.chat import ask_groq
+from cumbot.groq.chat import ASK_SYSTEM_PROMPT, ask_groq
+from cumbot.groq.conversation_store import ask_store
+from cumbot.telegram_utils import split_message
 
 
 async def handle_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -46,11 +49,30 @@ async def handle_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await reset_autopost_cooldown(chat.id)
         return
 
-    answer = await ask_groq(
-        question,
-        temperature=settings.groq_temperature if settings is not None else None,
+    try:
+        await chat.send_action(ChatAction.TYPING)
+    except Exception:
+        pass
+
+    temp = settings.groq_temperature if settings is not None else None
+    answer = await ask_groq(question, temperature=temp)
+
+    chunks = split_message(answer)
+    first_reply = await message.reply_text(chunks[0])
+    for chunk in chunks[1:]:
+        await message.reply_text(chunk)
+
+    # Salva la conversazione per eventuali reply di follow-up
+    ask_store.set(
+        chat_id=chat.id,
+        bot_message_id=first_reply.message_id,
+        messages=[
+            {"role": "system", "content": ASK_SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer},
+        ],
     )
-    reply = await message.reply_text(answer)
+
     await log_generated_message(
         chat_id=chat.id,
         trigger_type="ask",
@@ -59,7 +81,7 @@ async def handle_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         input_text=question,
         output_text=answer,
         request_message_id=message.message_id,
-        response_message_id=reply.message_id,
+        response_message_id=first_reply.message_id,
     )
     await reset_autopost_cooldown(chat.id)
 

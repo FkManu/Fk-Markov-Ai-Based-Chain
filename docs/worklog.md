@@ -1,5 +1,45 @@
 # Worklog
 
+## 2026-04-12 — sessione 27
+
+### Tuning seeding e refiner
+
+- **`refiner.py`**: aggiunta regola anti-traduzione slang nel system prompt — "Non tradurre mai termini inglesi usati come slang o gergo nel testo italiano. Lasciali esattamente come appaiono nella bozza (es. 'bro', 'fra', 'cringe', 'vibe', 'hype', 'lol', 'mid', 'goat', 'based', 'sus', 'bruh', 'fr', 'crush', ecc.)". Prima Groq rimuoveva o italianizzava slang come "fra", "bro", "cringe" nei draft Markov.
+- **`mention_handler.py`**: seeding contestuale esteso agli input ≥4 parole anche senza `question_type`. Il branch `else` ora chiama `extract_seeds_from_input` + `extract_topic_seeds(immediate_context, "generic")`; i ctx_seeds hanno priorità sui tone_seeds nel merge finale. Prima il seeding era attivo solo sulle domande riconosciute (chi/cosa/come/…).
+- **`config.py`**: `IMMEDIATE_CONTEXT_SIZE` alzato da 3 a 5. Il contesto immediato per la topic extraction include ora più messaggi precedenti.
+
+### Fix visualizzazione `/draft`
+
+`admin_handler.py` — `/draft` mostra ora la riga `IN: ...` per i record di tipo `mention` e `ask` con `input_text` presente. Prima l'input trigger non appariva nell'output del comando, rendendo impossibile capire cosa aveva scatenato la risposta.
+
+### Fix punteggiatura doppia `? ?`
+
+`rendering.py` — aggiunto `_DOUBLE_PUNCT_RE = re.compile(r"([?!])\1+")` applicato subito dopo `_PUNCTUATION_RE`. Prima `" ? ?"` veniva collassato in `"??"` da `_PUNCTUATION_RE` ma nulla riduceva il doppio `??` → `?`. Il bug era visibile nel record #464 (`profcant lo fa lui adesso? ? Come cazzo si riconosce?`).
+
+### Miglioramenti intent mention
+
+- **`detect_action` — estrazione nome proprio** (`intent.py`): l'azione `insulta` ora estrae il soggetto con priorità: `@username` → parola capitalizzata (nome proprio, es. "Rocco" da "insulta quel coglione di Rocco") → fallback prime 3 parole. Prima prendeva sempre le prime 3 parole generiche ("quel coglione di"), rendendo il seeding inutile.
+- **Reaction/agreement breve** (`mention_handler.py`): quando `intent_label in ("reaction", "agreement")` e l'input è ≤2 parole, il bot bypassa completamente Markov e Groq. Con probabilità 35% invia uno sticker dal corpus; altrimenti risponde con una frase breve ironica da un pool fisso di 24 risposte ("ok", "ci sta", "sei un grande", "diglielo", "vabbè", "maddai", ecc.). Loggato con `notes="reaction_short"`. Fix specifico: "ci sta" viene classificato come `agreement` (non `reaction`) da Groq — la condizione copre entrambi i label.
+- **Roast — contrattacco diretto** (`refiner.py`): aggiunto parametro `trigger_input` a `refine_draft`. Quando `tone="aggressive"` e `trigger_input` è presente (solo per `intent_label == "roast"`), Groq riceve l'insulto originale dell'utente e la istruzione di formulare un contrattacco diretto in prima persona invece di limitarsi ad amplificare la bozza.
+
+### `/ask` — web search + conversazione multi-turn
+
+**Web search e fallback chain:**
+- `config.py`: aggiunto `GROQ_ASK_API_KEY` (chiave Groq dedicata per `/ask`, separata da `GROQ_API_KEY` usata da refiner e classifier) e `GROQ_COMPOUND_MINI_MODEL=compound-beta-mini`.
+- `groq/service.py`: `GroqService.__init__` accetta ora `api_key` opzionale; se fornita sovrascrive `config.GROQ_API_KEY`. Backward-compatible (`groq_service = GroqService()` continua a funzionare).
+- `groq/service.py`: aggiunto metodo `generate_conversation(messages, ...)` per chiamate multi-turn con lista completa `{role, content}`.
+- `groq/chat.py`: il client `_ask_service` usa `GROQ_ASK_API_KEY` se configurata, altrimenti `GROQ_API_KEY`. Catena di fallback: `compound-beta` (800 tok, web search) → `compound-beta-mini` (600 tok) → `llama-3.3-70b-versatile` (800 tok, no search). Qualsiasi eccezione su un modello passa al successivo; errori loggati con `LOGGER.warning`.
+- `groq/chat.py`: system prompt `/ask` riformulato — conciso, no markdown pesante, no frasi di chiusura. Pulizia automatica citazioni inline `[1]`, `[source]` e URL isolati prodotti da compound-beta.
+- `ask_handler.py`: aggiunta `TYPING` action durante la generazione; risposte lunghe splittate con `split_message()`.
+
+**Conversazione multi-turn:**
+- `groq/conversation_store.py` (nuovo): store in-memory `(chat_id, bot_message_id) → [messages]` con TTL 2 ore. Cleanup automatico ad ogni `set()`. Istanza singleton `ask_store`.
+- `telegram_utils.py` (nuovo): `split_message(text)` — divide testo > 4000 char su newline/spazio, condiviso da `ask_handler` e `mention_handler`.
+- `ask_handler.py`: dopo ogni risposta salva la conversazione in `ask_store` con `[system, user, assistant]`.
+- `mention_handler.py`: all'inizio di `handle_mention`, se il messaggio è un reply a un bot message e `ask_store.get()` restituisce una storia, continua la conversazione con `ask_groq_conversation()` invece di passare al Markov. La storia aggiornata viene salvata sotto il nuovo `message_id` del bot. Loggato con `notes="ask_continuation"`. Il `@mention` del bot viene strippato dal messaggio utente prima di aggiungerlo alla storia.
+
+---
+
 ## 2026-04-12 — sessione 26
 
 - Preparazione repository GitHub sicura:

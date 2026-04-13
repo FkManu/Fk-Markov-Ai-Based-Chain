@@ -231,10 +231,20 @@ def detect_action(text: str, bot_username: str = "") -> BotAction | None:
 
     m = _INSULTA_RE.search(cleaned)
     if m:
-        raw_target = (m.group(1) or "").strip().lstrip("@")
-        # Rimuovi punteggiatura finale e prendi al massimo le prime 3 parole
-        target_words = re.findall(r"[\w']+", raw_target)[:3]
-        target = " ".join(target_words)
+        raw_target = (m.group(1) or "").strip()
+        # Priorità 1: @username esplicito
+        at_match = re.search(r"@([\w]+)", raw_target)
+        if at_match:
+            target = at_match.group(1)
+        else:
+            # Priorità 2: parola capitalizzata interna (nome proprio, es. "Rocco")
+            capitalized = re.findall(r"\b([A-Z][a-z]{1,})\b", raw_target)
+            if capitalized:
+                target = capitalized[0]
+            else:
+                # Fallback: prime 3 parole
+                target_words = re.findall(r"[\w']+", raw_target)[:3]
+                target = " ".join(target_words)
         return BotAction(type="insulta", target=target)
 
     return None
