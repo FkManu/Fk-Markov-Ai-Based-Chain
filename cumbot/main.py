@@ -16,11 +16,13 @@ from cumbot.handlers import (
     get_annuncio_handlers,
     get_ask_handler,
     get_cooldown_handler,
+    get_cumpleanno_handlers,
     get_mention_handler,
     get_reaction_handler,
     get_setup_handlers,
 )
 from cumbot.jobs.announcements import send_due_announcements
+from cumbot.jobs.birthdays import send_due_birthdays
 from cumbot.jobs.retrain import scheduled_retrain
 from cumbot.markov.generator import load_models
 from cumbot.telegram_context.collector import collector
@@ -105,6 +107,7 @@ async def context_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 _BOT_COMMANDS = [
     BotCommand("ask", "Fai una domanda al bot"),
+    BotCommand("cumpleanno", "Imposta o gestisci un compleanno nel gruppo"),
     BotCommand("setup", "Configura il bot per una chat (admin)"),
     BotCommand("status", "Stato del bot e della chat corrente (admin)"),
     BotCommand("persona", "Imposta la persona attiva (admin)"),
@@ -142,6 +145,8 @@ def build_application() -> Application:
         group=-1,
     )
     application.add_handler(get_ask_handler())
+    for handler in get_cumpleanno_handlers():
+        application.add_handler(handler)
     for handler in get_admin_handlers():
         application.add_handler(handler)
     for handler in get_setup_handlers():
@@ -154,6 +159,7 @@ def build_application() -> Application:
 
     # Job: ogni minuto controlla e invia gli annunci programmati
     if application.job_queue is not None:
+        application.job_queue.run_repeating(send_due_birthdays, interval=60, first=10)
         application.job_queue.run_repeating(send_due_announcements, interval=60, first=5)
         # Job: retrain giornaliero per chat — verifica ogni ora, gira solo nella finestra configurata
         application.job_queue.run_repeating(scheduled_retrain, interval=3600, first=60)

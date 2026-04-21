@@ -5,6 +5,7 @@ import random
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters
 
+from cumbot.announcement_store import announcement_store
 from cumbot.access import is_chat_allowed
 from cumbot import config
 from cumbot.db.state import (
@@ -32,6 +33,13 @@ def _is_direct_bot_trigger(update: Update, bot_username: str | None, bot_id: int
         and bot_id is not None
         and reply.from_user.id == bot_id
     )
+    if (
+        is_reply_to_bot
+        and reply is not None
+        and update.effective_chat is not None
+        and announcement_store.is_announcement(update.effective_chat.id, reply.message_id)
+    ):
+        return has_mention
     return has_mention or is_reply_to_bot
 
 

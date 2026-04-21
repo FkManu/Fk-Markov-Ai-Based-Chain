@@ -1,5 +1,49 @@
 # Worklog
 
+## 2026-04-21 — sessione 29
+
+- Aggiunto comando pubblico `/cumpleanno` per gestione compleanni per gruppo Telegram.
+  - Sintassi supportata:
+    - `/cumpleanno <data>` per impostare o aggiornare il proprio compleanno;
+    - `/cumpleanno @tag <data>` per impostare o aggiornare il compleanno di un utente noto nel gruppo;
+    - `/cumpleanno show [@tag]`;
+    - `/cumpleanno remove [@tag]`.
+  - Parser data tollerante su `gg/mm/aaaa`, `gg/mm/aa`, `gg-mm-aaaa`, `gg-mm-aa`.
+  - Giorno e mese accettano anche una sola cifra (`4/5/94` → `04/05/1994` a livello logico).
+  - Regola anni a due cifre:
+    - `00-25` → `2000-2025`
+    - `26-99` → `1926-1999`
+  - Input errati o incompleti restituiscono help sintetico con gli esempi piu comuni.
+  - Conferma salvataggio compatta: `Compleanno aggiunto per @tag il giorno dd/mm/yyyy.`
+- Aggiunte tabelle SQLite dedicate in `db/state.py`:
+  - `birthdays` per il salvataggio per-`chat_id` dei compleanni;
+  - `birthday_delivery_log` per dedup annuale degli invii.
+- Nuovo job `jobs/birthdays.py`:
+  - controlla la data locale italiana con `ANNOUNCEMENT_TIMEZONE`;
+  - invia il messaggio di auguri a mezzanotte;
+  - evita doppi invii dopo restart grazie a `birthday_delivery_log`.
+- Gestito caso `29/02`:
+  - negli anni bisestili gli auguri partono il 29;
+  - negli anni non bisestili partono il 28 con nota esplicita che il compleanno vero sarebbe il 29 e battuta leggera.
+- `main.py` aggiornato:
+  - registrato il comando bot `/cumpleanno`;
+  - registrato l'handler pubblico;
+  - registrato il job scheduler compleanni.
+- Test aggiunti:
+  - parser e help comando;
+  - storage DB compleanni;
+  - dedup invio annuale;
+  - fallback `29/02`.
+
+## 2026-04-17 — sessione 28
+
+- Fix `/annuncio`: i reply agli annunci programmati non triggerano piu il bot come se fosse stato interpellato.
+  - Nuovo store in-memory `announcement_store` con TTL per ricordare i `message_id` inviati dal job annunci.
+  - `jobs/announcements.py` marca il messaggio appena inviato come annuncio non interattivo.
+  - `mention_handler.py` ignora i reply a quei messaggi quando il trigger e solo "reply al bot".
+  - `cooldown_handler.py` allineato: reply a un annuncio non vengono trattati come direct bot trigger per il reset cooldown.
+  - Eccezione voluta: se nel reply all'annuncio compare un `@bot`, il trigger esplicito continua a funzionare.
+
 ## 2026-04-12 — sessione 27
 
 ### Tuning seeding e refiner

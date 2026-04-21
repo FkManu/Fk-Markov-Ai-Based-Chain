@@ -304,3 +304,99 @@ def test_live_corpus_rows_for_training_corpus_are_incremental(tmp_path, monkeypa
         assert [row["text"] for row in incremental_rows] == ["terza riga"]
 
     asyncio.run(scenario())
+
+
+def test_birthday_upsert_show_and_delete_are_chat_scoped(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    monkeypatch.setattr(state.config, "DATABASE_PATH", db_path)
+
+    async def scenario() -> None:
+        await state.init_db()
+        first = await state.upsert_birthday(
+            chat_id=-100123,
+            user_id=1,
+            username="alice",
+            display_name="Alice",
+            day=14,
+            month=5,
+            birth_year=1994,
+        )
+        assert first.day == 14
+        assert first.month == 5
+
+        second = await state.upsert_birthday(
+            chat_id=-100123,
+            user_id=1,
+            username="alice",
+            display_name="Alice A.",
+            day=15,
+            month=5,
+            birth_year=1994,
+        )
+        assert second.day == 15
+        assert second.display_name == "Alice A."
+
+        same = await state.get_birthday(-100123, 1)
+        other_chat = await state.get_birthday(-100999, 1)
+        assert same is not None
+        assert same.day == 15
+        assert other_chat is None
+
+        deleted = await state.delete_birthday(-100123, 1)
+        missing = await state.get_birthday(-100123, 1)
+        assert deleted is True
+        assert missing is None
+
+    asyncio.run(scenario())
+
+
+def test_pending_birthdays_support_feb29_fallback_and_delivery_log(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "state.sqlite3"
+    monkeypatch.setattr(state.config, "DATABASE_PATH", db_path)
+
+    async def scenario() -> None:
+        await state.init_db()
+        feb28 = await state.upsert_birthday(
+            chat_id=-100123,
+            user_id=1,
+            username="alice",
+            display_name="Alice",
+            day=28,
+            month=2,
+            birth_year=1994,
+        )
+        feb29 = await state.upsert_birthday(
+            chat_id=-100123,
+            user_id=2,
+            username="bob",
+            display_name="Bob",
+            day=29,
+            month=2,
+            birth_year=1992,
+        )
+
+        due = await state.get_pending_birthdays_for_date(
+            month=2,
+            day=28,
+            celebration_year=2027,
+            include_feb29_fallback=True,
+        )
+        assert [entry.user_id for entry in due] == [1, 2]
+
+        logged = await state.mark_birthday_delivered(
+            birthday_id=feb28.id,
+            celebration_year=2027,
+            delivered_at="2027-02-28T00:00:00+01:00",
+        )
+        assert logged is True
+
+        due_after_log = await state.get_pending_birthdays_for_date(
+            month=2,
+            day=28,
+            celebration_year=2027,
+            include_feb29_fallback=True,
+        )
+        assert [entry.user_id for entry in due_after_log] == [2]
+        assert feb29.day == 29
+
+    asyncio.run(scenario())

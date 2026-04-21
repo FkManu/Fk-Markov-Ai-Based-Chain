@@ -1,5 +1,12 @@
 # Runbook
 
+## Comandi utenti
+
+- `/cumpleanno <data>` — salva o aggiorna il proprio compleanno per il gruppo corrente
+- `/cumpleanno @tag <data>` — salva o aggiorna il compleanno del tag indicato per il gruppo corrente
+- `/cumpleanno show [@tag]` — mostra il compleanno salvato proprio o del tag indicato
+- `/cumpleanno remove [@tag]` — rimuove il compleanno salvato proprio o del tag indicato
+
 ## Comandi admin
 
 - `/persona [chat:<chat_id>] <user_id,user_id,...>`
@@ -49,6 +56,7 @@
 - Per `ALLOWED_CHAT_IDS` usa preferibilmente gli ID canonici Telegram (`-100...` per i supergruppi). Il runtime tollera anche lo shorthand positivo senza prefisso `-100`, ma e meglio salvare il valore completo.
 - `/setup` apre un pannello inline per configurare rapidamente Groq, persona e cooldown di qualsiasi chat nota al bot.
 - `/annuncio` apre un pannello inline per creare/gestire annunci programmati (testo libero, orario fisso giornaliero). In gruppo apre direttamente la lista annunci per quella chat; in privato chiede prima di selezionare la chat. Il bot usa `ANNOUNCEMENT_TIMEZONE` per confrontare l'ora corrente con l'orario dell'annuncio (default `Europe/Rome`) e la UI mostra esplicitamente il timezone italiano.
+- I messaggi inviati dal job `/annuncio` sono trattati come messaggi bot non interattivi: se un utente fa reply a un annuncio, il bot non lo interpreta come trigger di mention/reply e non risponde automaticamente. Se invece nel reply c'è un `@bot`, il trigger esplicito continua a funzionare.
 - Se una bozza contiene `@user`, il bot prova a trasformarlo in una mention reale usando prima l'utente che ha triggerato il messaggio e poi il contesto recente della chat.
 - Per ricevere gli update reaction da Telegram, il bot deve essere admin nel gruppo.
 - Il bot rileva il tono del contesto recente (ultimi 5 messaggi): se aggressivo (insulti presenti) sia la catena Markov che Groq orientano l'output in direzione nervosa/tagliente; se playful (≥2 "ahah/lol" in 5 msg) verso ironica/divertente. Funziona su mention, reply e autopost. Zero chiamate Groq extra.
@@ -70,6 +78,12 @@
 - Se `@user` è presente nella bozza Markov e Groq lo rimuove, il post-processing lo riappende in coda all'output (`PLACEHOLDER` check in `refiner.py`).
 - `/status` mostra anche il namespace modelli attivo della chat corrente, utile per verificare che il retrain stia usando il path giusto.
 - `/status` mostra anche l'ultimo retrain noto per la chat e l'ultimo export usato, se esiste gia un checkpoint in `chat_training_state`.
+- `/cumpleanno` funziona solo nei gruppi o supergruppi, perche i compleanni sono salvati per `chat_id`. Accetta `gg/mm/aaaa`, `gg/mm/aa`, `gg-mm-aaaa`, `gg-mm-aa`.
+- L'help di `/cumpleanno` e volutamente sintetico e mostra solo gli esempi piu comuni. La conferma salvataggio risponde in forma breve: `Compleanno aggiunto per @tag il giorno dd/mm/yyyy.`
+- Gli anni a due cifre sono interpretati cosi: `00-25` → `2000-2025`, `26-99` → `1926-1999`.
+- I compleanni sono salvati in tabelle dedicate (`birthdays`, `birthday_delivery_log`) separate dagli annunci.
+- Il job compleanni gira ogni minuto e invia gli auguri alla mezzanotte locale italiana (`ANNOUNCEMENT_TIMEZONE`). Deduplica per anno, quindi restart o riavvii del bot non duplicano il messaggio.
+- I nati il `29/02` ricevono gli auguri il `28/02` negli anni non bisestili, con messaggio che precisa che il compleanno vero sarebbe il 29 e una piccola battuta.
 
 ## Tool CLI locali
 

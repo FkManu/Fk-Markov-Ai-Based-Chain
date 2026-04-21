@@ -92,6 +92,20 @@ class ChatTrainingState:
     updated_at: str | None = None
 
 
+@dataclass(slots=True)
+class BirthdayEntry:
+    id: int
+    chat_id: int
+    user_id: int
+    username: str
+    display_name: str
+    day: int
+    month: int
+    birth_year: int
+    created_at: str
+    updated_at: str
+
+
 def _pick_autopost_threshold(
     minimum: int | None = None,
     maximum: int | None = None,
@@ -224,6 +238,23 @@ def _deserialize_chat_training_state(row: aiosqlite.Row | None) -> ChatTrainingS
         last_export_path=row["last_export_path"],
         training_corpus_size=int(row["training_corpus_size"] or 0),
         models_path=row["models_path"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _deserialize_birthday(row: aiosqlite.Row | None) -> BirthdayEntry | None:
+    if row is None:
+        return None
+    return BirthdayEntry(
+        id=int(row["id"]),
+        chat_id=int(row["chat_id"]),
+        user_id=int(row["user_id"]),
+        username=row["username"] or "",
+        display_name=row["display_name"] or "",
+        day=int(row["day"]),
+        month=int(row["month"]),
+        birth_year=int(row["birth_year"]),
+        created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
@@ -428,6 +459,52 @@ async def init_db() -> None:
         )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_announcements_chat ON announcements (chat_id, id ASC)"
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS birthdays (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '',
+                day INTEGER NOT NULL,
+                month INTEGER NOT NULL,
+                birth_year INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(chat_id, user_id)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_birthdays_chat_date
+            ON birthdays (chat_id, month, day, user_id)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_birthdays_chat_username
+            ON birthdays (chat_id, username)
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS birthday_delivery_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                birthday_id INTEGER NOT NULL,
+                celebration_year INTEGER NOT NULL,
+                delivered_at TEXT NOT NULL,
+                UNIQUE(birthday_id, celebration_year)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_birthday_delivery_lookup
+            ON birthday_delivery_log (birthday_id, celebration_year)
+            """
         )
         await db.commit()
 
@@ -1333,6 +1410,192 @@ async def get_live_messages(chat_id: int, limit: int = 100) -> list[str]:
         )
         rows = await cursor.fetchall()
     return [row[0] for row in rows if row[0]]
+
+
+async def upsert_birthday(
+    *,
+    chat_id: int,
+    user_id: int,
+    username: str,
+    display_name: str,
+    day: int,
+    month: int,
+    birth_year: int,
+) -> BirthdayEntry:
+    timestamp = _utc_now()
+    async with aiosqlite.connect(config.DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute(
+            """
+            INSERT INTO birthdays (
+                chat_id, user_id, username, display_name,
+                day, month, birth_year, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                username = excluded.username,
+                display_name = excluded.display_name,
+                day = excluded.day,
+                month = excluded.month,
+                birth_year = excluded.birth_year,
+                updated_at = excluded.updated_at
+            """,
+            (
+                chat_id,
+                user_id,
+                username.strip(),
+                display_name.strip(),
+                day,
+                month,
+                birth_year,
+                timestamp,
+                timestamp,
+            ),
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT * FROM birthdays WHERE chat_id = ? AND user_id = ?",
+            (chat_id, user_id),
+        )
+        row = await cursor.fetchone()
+    birthday = _deserialize_birthday(row)
+    assert birthday is not None
+    return birthday
+
+
+async def get_birthday(chat_id: int, user_id: int) -> BirthdayEntry | None:
+    async with aiosqlite.connect(config.DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM birthdays WHERE chat_id = ? AND user_id = ?",
+            (chat_id, user_id),
+        )
+        row = await cursor.fetchone()
+    return _deserialize_birthday(row)
+
+
+async def get_birthday_by_username(chat_id: int, username: str) -> BirthdayEntry | None:
+    normalized = username.strip().lstrip("@").lower()
+    if not normalized:
+        return None
+    async with aiosqlite.connect(config.DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT *
+            FROM birthdays
+            WHERE chat_id = ?
+              AND LOWER(username) = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (chat_id, normalized),
+        )
+        row = await cursor.fetchone()
+    return _deserialize_birthday(row)
+
+
+async def resolve_known_chat_user(
+    chat_id: int,
+    username: str,
+) -> tuple[int, str, str] | None:
+    normalized = username.strip().lstrip("@").lower()
+    if not normalized:
+        return None
+
+    birthday = await get_birthday_by_username(chat_id, normalized)
+    if birthday is not None:
+        return birthday.user_id, birthday.username, birthday.display_name
+
+    async with aiosqlite.connect(config.DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT user_id, username
+            FROM live_corpus
+            WHERE chat_id = ?
+              AND user_id IS NOT NULL
+              AND LOWER(username) = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (chat_id, normalized),
+        )
+        row = await cursor.fetchone()
+    if row is None or row[0] is None:
+        return None
+    canonical_username = (row[1] or normalized).strip()
+    display_name = f"@{canonical_username}" if canonical_username else f"utente {row[0]}"
+    return int(row[0]), canonical_username, display_name
+
+
+async def delete_birthday(chat_id: int, user_id: int) -> bool:
+    async with aiosqlite.connect(config.DATABASE_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM birthdays WHERE chat_id = ? AND user_id = ?",
+            (chat_id, user_id),
+        )
+        await db.commit()
+    return (cursor.rowcount or 0) > 0
+
+
+async def get_pending_birthdays_for_date(
+    *,
+    month: int,
+    day: int,
+    celebration_year: int,
+    include_feb29_fallback: bool = False,
+) -> list[BirthdayEntry]:
+    conditions = ["(month = ? AND day = ?)"]
+    params: list[Any] = [month, day]
+    if include_feb29_fallback:
+        conditions.append("(month = 2 AND day = 29)")
+
+    query = f"""
+        SELECT *
+        FROM birthdays
+        WHERE ({' OR '.join(conditions)})
+          AND NOT EXISTS (
+              SELECT 1
+              FROM birthday_delivery_log
+              WHERE birthday_id = birthdays.id
+                AND celebration_year = ?
+          )
+        ORDER BY chat_id ASC, id ASC
+    """
+    params.append(celebration_year)
+
+    async with aiosqlite.connect(config.DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+    return [
+        birthday
+        for row in rows
+        if (birthday := _deserialize_birthday(row)) is not None
+    ]
+
+
+async def mark_birthday_delivered(
+    *,
+    birthday_id: int,
+    celebration_year: int,
+    delivered_at: str | None = None,
+) -> bool:
+    timestamp = delivered_at or _utc_now()
+    async with aiosqlite.connect(config.DATABASE_PATH) as db:
+        before_changes = db.total_changes
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO birthday_delivery_log (
+                birthday_id, celebration_year, delivered_at
+            )
+            VALUES (?, ?, ?)
+            """,
+            (birthday_id, celebration_year, timestamp),
+        )
+        await db.commit()
+        inserted = db.total_changes - before_changes
+    return bool(inserted)
 
 
 def _deserialize_announcement(row: aiosqlite.Row | None) -> Announcement | None:

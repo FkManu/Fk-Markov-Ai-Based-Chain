@@ -29,6 +29,7 @@ The architecture is intentionally split between:
 - GIF and sticker corpus collection / resend behavior
 - Reaction logging and generated-output monitoring
 - Daily scheduled announcements via `/annuncio`
+- Group-scoped birthday reminders via `/cumpleanno`
 - Per-chat settings for cooldown, personas, Groq toggle, temperature, and setup flow
 - Ubuntu VPS deployment through `systemd`
 
@@ -114,6 +115,7 @@ User-facing interaction mainly happens through:
 - mentions
 - replies
 - `/ask`
+- `/cumpleanno`
 
 For the full operational command list and behavior, see [`docs/runbook.md`](docs/runbook.md).
 

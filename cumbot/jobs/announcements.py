@@ -6,6 +6,7 @@ from datetime import datetime
 
 from telegram.ext import ContextTypes
 
+from cumbot.announcement_store import announcement_store
 from cumbot import config
 from cumbot.db.state import get_due_announcements
 
@@ -33,7 +34,8 @@ async def send_due_announcements(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     for ann in announcements:
         try:
-            await context.bot.send_message(chat_id=ann.chat_id, text=ann.text)
+            sent = await context.bot.send_message(chat_id=ann.chat_id, text=ann.text)
+            announcement_store.mark(ann.chat_id, sent.message_id)
             LOGGER.info(
                 "[ANNUNCIO] chat=%s id=%s ora=%02d:%02d inviato",
                 ann.chat_id,
